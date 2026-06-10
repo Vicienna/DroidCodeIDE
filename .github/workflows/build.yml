@@ -1,0 +1,229 @@
+name: Build & Release APK/AAB
+
+on:
+  # HANYA jalan kalau push tag v* (contoh: v1.0.0, v2.3.1)
+  # TIDAK jalan di push commit biasa ke main/master
+  push:
+    tags:
+      - 'v*'
+  # Bisa jalanin manual di tab Actions -> Run Workflow
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version Name (e.g., 1.0.1) - Required for manual run'
+        required: true
+        type: string
+      buildType:
+        description: 'Build Type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+
+env:
+  JAVA_VERSION: '17'
+  GRADLE_VERSION: '8.7'
+
+jobs:
+  build:
+    name: Build Android Artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Butuh history untuk version extraction
+
+      - name: Setup JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          ndk-version: r26d
+          cmake-version: 3.22.1
+
+      # ============================================================
+      # DEBUG KEYSTORE: Auto-generate di CI (Aman untuk Debug Only)
+      # ============================================================
+      - name: Generate Debug Keystore (Auto)
+        if: inputs.buildType == 'debug' || github.event_name == 'pull_request'
+        id: debug_keystore
+        run: |
+          # Android default debug keystore config
+          keytool -genkeypair \
+            -alias androiddebugkey \
+            -keypass android \
+            -keystore debug.keystore \
+            -storepass android \
+            -dname "CN=Android Debug,O=Android,C=US" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -deststoretype pkcs12
+          echo "keystore_path=$(pwd)/debug.keystore" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # RELEASE KEYSTORE: Decode dari Secrets (WAJIB Persisten)
+      # ============================================================
+      - name: Decode Release Keystore
+        if: inputs.buildType == 'release' || github.event_name == 'push'
+        id: release_keystore
+        uses: timheuer/base64-to-file@v1.2
+        with:
+          fileName: 'release.keystore'
+          encodedString: ${{ secrets.KEYSTORE_BASE64 }}
+
+      - name: Permission Gradle Wrapper
+        run: chmod +x ./gradlew
+
+      # ============================================================
+      # BUILD DEBUG
+      # ============================================================
+      - name: Build Debug APK
+        if: inputs.buildType == 'debug' || github.event_name == 'pull_request'
+        env:
+          KEYSTORE_PATH: ${{ steps.debug_keystore.outputs.keystore_path }}
+          KEYSTORE_PASSWORD: android
+          KEY_ALIAS: androiddebugkey
+          KEY_PASSWORD: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # ============================================================
+      # BUILD RELEASE (Butuh Secrets di GitHub Settings)
+      # ============================================================
+      - name: Build Release APK & AAB
+        if: inputs.buildType == 'release' || github.event_name == 'push'
+        env:
+          KEYSTORE_PATH: ${{ steps.release_keystore.outputs.filePath }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace
+
+      # ============================================================
+      # VERSION EXTRACTION
+      # ============================================================
+      - name: Extract Version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION=${GITHUB_REF_NAME#v}
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION=${{ github.event.inputs.version }}
+          else
+            VERSION=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          fi
+          VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K\d+' app/build.gradle.kts)
+          echo "version_name=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+
+      # ============================================================
+      # ARTIFACTS & RELEASE
+      # ============================================================
+      - name: Rename Artifacts
+        run: |
+          mkdir -p artifacts
+          # Debug
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk artifacts/DroidCodeIDE-v${{ steps.version.outputs.version_name }}-debug.apk
+          fi
+          # Release
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk artifacts/DroidCodeIDE-v${{ steps.version.outputs.version_name }}-release.apk
+          fi
+          if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+            cp app/build/outputs/bundle/release/app-release.aab artifacts/DroidCodeIDE-v${{ steps.version.outputs.version_name }}-release.aab
+          fi
+
+      - name: Upload Artifacts (Workflow History)
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroidCodeIDE-Build-${{ steps.version.outputs.version_name }}
+          path: artifacts/
+          retention-days: 30
+
+      # ============================================================
+      # CREATE GITHUB RELEASE (Hanya Tag Push / Manual Release)
+      # ============================================================
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.buildType == 'release')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: DroidCode IDE v${{ steps.version.outputs.version_name }}
+          body: |
+            ## DroidCode IDE v${{ steps.version.outputs.version_name }}
+            
+            **Changes:** See [Commits](https://github.com/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.ref }})
+            
+            **Downloads:**
+            - `DroidCodeIDE-v${{ steps.version.outputs.version_name }}-release.apk` (Universal APK - **Signed with Persistent Key**)
+            - `DroidCodeIDE-v${{ steps.version.outputs.version_name }}-release.aab` (Play Store Bundle)
+            - `DroidCodeIDE-v${{ steps.version.outputs.version_name }}-debug.apk` (Debug Build - Auto Signed)
+            
+            **⚠️ Important:** Release APK signed with persistent keystore (GitHub Secrets). Debug APK signed with ephemeral key (re-generated every run).
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================
+  # OPTIONAL JOBS (Lint/Test/Security) - Hanya jalan di PR/Tag
+  # ============================================================
+  lint-test:
+    name: Lint & Unit Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push' && github.ref_type == 'tag'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'gradle'
+      - name: Run Lint
+        run: ./gradlew lintDebug --no-daemon
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+      - name: Upload Lint Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+
+  dependency-check:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'DroidCodeIDE'
+          path: '.'
+          format: 'HTML'
+          out: 'reports'
+          args: >
+            --failOnCVSS 7
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/dependency-check-report.html

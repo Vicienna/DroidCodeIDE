@@ -1,0 +1,33 @@
+# ============================================================
+# LOCAL PROPERTIES - COPY FILE INI JADI local.properties
+# JANGAN COMMIT FILE local.properties ASLI KE GIT (BERISI RAHASIA)
+# ============================================================
+
+# Android SDK Path (Otomatis di GitHub Actions, manual di Lokal)
+# sdk.dir=/Users/username/Library/Android/sdk          # Mac
+# sdk.dir=C\\:\\Users\\username\\AppData\\Local\\Android\\Sdk  # Windows
+# sdk.dir=/home/username/Android/Sdk                   # Linux
+
+# ============================================================
+# SIGNING CONFIG (RELEASE BUILD)
+# Generate Keystore:
+# keytool -genkey -v -keystore droidcode-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias droidcode
+# Lalu convert ke Base64 untuk GitHub Secrets: base64 -i droidcode-release.jks | pbcopy
+# ============================================================
+
+# Path absolut ke file .jks
+# KEYSTORE_PATH=/home/user/keys/droidcode-release.jks
+
+# Password Keystore
+# KEYSTORE_PASSWORD=your_keystore_password
+
+# Key Alias
+# KEY_ALIAS=droidcode
+
+# Password Key (bisa beda sama keystore password)
+# KEY_PASSWORD=your_key_password
+
+# ============================================================
+# OPTIONAL: Custom Monaco CDN Mirror (China/Intranet)
+# MONACO_CDN_URL=https://cdn.jsdelivr.net/npm/monaco-editor@0.48.0/min
+# ============================================================
