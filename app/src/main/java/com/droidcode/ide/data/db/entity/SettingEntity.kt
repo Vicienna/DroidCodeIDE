@@ -7,4 +7,4 @@ import androidx.room.PrimaryKey
 data class SettingEntity(
     @PrimaryKey val key: String,
     val value: String
-) 
+)

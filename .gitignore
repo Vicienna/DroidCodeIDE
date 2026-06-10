@@ -1,3 +1,17 @@
+# Keystore & Secrets
 *.jks
 *.keystore
 local.properties
+*.properties.secret
+
+# Build Outputs
+/build
+/app/build
+/*.apk
+/*.aab
+
+# IDE & OS
+.idea/
+*.iml
+.gradle/
+.DS_Store
