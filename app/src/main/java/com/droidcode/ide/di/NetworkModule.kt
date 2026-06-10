@@ -1,5 +1,4 @@
 package com.droidcode.ide.di
-
 import com.droidcode.ide.lsp.LspClient
 import com.droidcode.ide.lsp.LspClientImpl
 import com.droidcode.ide.terminal.TerminalSession
@@ -21,41 +20,23 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
-
-    @Provides
-    @Singleton
+    @Provides @Singleton
     fun provideOkHttpClient(): OkHttpClient {
-        val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY }
-        return OkHttpClient.Builder()
-            .addInterceptor(logging)
-            .build()
+        return OkHttpClient.Builder().addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BODY }).build()
     }
-
-    @Provides
-    @Singleton
-    fun provideGson(): Gson = GsonBuilder()
-        .setLenient()
-        .serializeNulls()
-        .create()
+    @Provides @Singleton
+    fun provideGson(): Gson = GsonBuilder().setLenient().serializeNulls().create()
 }
 
 @Module
 @InstallIn(SingletonComponent::class)
 object CoreServicesModule {
-
-    @Provides
-    @Singleton
-    fun provideLspClient(okHttp: OkHttpClient, gson: Gson): LspClient = LspClientImpl(okHttp, gson)
-
-    @Provides
-    @Singleton
-    fun provideTerminalSession(): TerminalSession = TerminalSessionImpl()
-
-    @Provides
-    @Singleton
+    @Provides @Singleton
+    fun provideLspClient(okHttp: OkHttpClient, gson: Gson): LspClient = LspClientImpl(okHttp, gson, kotlinx.coroutines.GlobalScope)
+    @Provides @Singleton
+    fun provideTerminalSession(): TerminalSession = TerminalSessionImpl(kotlinx.coroutines.GlobalScope)
+    @Provides @Singleton
     fun provideGitManager(): GitManager = GitManagerImpl()
-
-    @Provides
-    @Singleton
-    fun provideExtensionHost(): ExtensionHost = ExtensionHostImpl()
+    @Provides @Singleton
+    fun provideExtensionHost(): ExtensionHost = ExtensionHostImpl(kotlinx.coroutines.GlobalScope)
 }
