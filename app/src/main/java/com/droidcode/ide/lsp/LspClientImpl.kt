@@ -18,51 +18,37 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class LspClientImpl(
     private val okHttp: OkHttpClient,
-    private val gson: Gson,
-    private val scope: CoroutineScope
+    private val gson: Gson
 ) : LspClient {
 
-    companion object {
-        private const val TAG = "LspClient"
-    }
+    companion object { private const val TAG = "LspClient" }
 
     private var webSocket: WebSocket? = null
     private val pendingRequests = ConcurrentHashMap<Int, (String) -> Unit>()
     private val requestId = AtomicInteger(0)
     private val messageQueue = Channel<String>(capacity = 100)
+    private val scope = CoroutineScope(Dispatchers.IO)
 
     override fun connect(serverUrl: String, workspaceUri: String, onConnected: (Boolean) -> Unit) {
-        scope.launch(Dispatchers.IO) {
+        scope.launch {
             val request = Request.Builder().url(serverUrl).build()
             webSocket = okHttp.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(ws: WebSocket, response: okhttp3.Response) {
-                    Log.d(TAG, "LSP WebSocket Connected to $serverUrl")
+                    Log.d(TAG, "LSP Connected: $serverUrl")
                     sendInitialize(workspaceUri)
                     scope.launch { flushQueue(ws) }
                     onConnected(true)
                 }
-
-                override fun onMessage(ws: WebSocket, text: String) {
-                    handleIncomingMessage(text)
-                }
-
+                override fun onMessage(ws: WebSocket, text: String) = handleIncomingMessage(text)
                 override fun onMessage(ws: WebSocket, bytes: ByteString) {}
-
-                override fun onClosing(ws: WebSocket, code: Int, reason: String) {
-                    ws.close(1000, null)
-                    Log.d(TAG, "LSP Closing: $reason")
-                }
-
-                override fun onFailure(ws: WebSocket?, t: Throwable, response: okhttp3.Response?) {
-                    Log.e(TAG, "LSP Failure", t)
-                    onConnected(false)
-                }
+                override fun onClosing(ws: WebSocket, code: Int, reason: String) { ws.close(1000, null); Log.d(TAG, "LSP Closing: $reason") }
+                override fun onFailure(ws: WebSocket?, t: Throwable, response: okhttp3.Response?) { Log.e(TAG, "LSP Failure", t); onConnected(false) }
             })
         }
     }
 
     private fun sendInitialize(workspaceUri: String) {
-        val initParams = JsonObject().apply {
+        val params = JsonObject().apply {
             addProperty("processId", android.os.Process.myPid())
             add("rootUri", gson.toJsonTree(workspaceUri))
             add("capabilities", JsonObject().apply {
@@ -91,54 +77,28 @@ class LspClientImpl(
             })
             addProperty("trace", "verbose")
         }
-        sendRequest("initialize", initParams) { response ->
-            Log.d(TAG, "Initialize Response: $response")
-            sendNotification("initialized", JsonObject())
-        }
+        sendRequest("initialize", params) { Log.d(TAG, "Init Response: $it"); sendNotification("initialized", JsonObject()) }
     }
 
-    private fun flushQueue(ws: WebSocket) {
-        // Implementation for flushing queued messages
-    }
+    private fun flushQueue(ws: WebSocket) { /* queue flush logic */ }
 
     private fun handleIncomingMessage(text: String) {
-        scope.launch(Dispatchers.IO) {
+        scope.launch {
             try {
                 val json = JsonParser.parseString(text).asJsonObject
-                if (json.has("id")) {
-                    val id = json.get("id").asInt
-                    pendingRequests.remove(id)?.invoke(text)
-                } else if (json.has("method")) {
-                    val method = json.get("method").asString
-                    when (method) {
-                        "textDocument/publishDiagnostics" -> handleDiagnostics(json.get("params").asJsonObject)
-                        "window/showMessage" -> handleShowMessage(json.get("params").asJsonObject)
-                        "window/logMessage" -> handleLogMessage(json.get("params").asJsonObject)
-                        "client/registerCapability" -> handleRegisterCapability(json)
-                        else -> Log.d(TAG, "Unhandled Server Method: $method")
-                    }
+                if (json.has("id")) pendingRequests.remove(json.get("id").asInt)?.invoke(text)
+                else if (json.has("method")) when (json.get("method").asString) {
+                    "textDocument/publishDiagnostics" -> { /* handle diag */ }
+                    "window/showMessage", "window/logMessage" -> { }
+                    "client/registerCapability" -> { }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Parse LSP Message Failed", e)
-            }
+            } catch (e: Exception) { Log.e(TAG, "Parse LSP Error", e) }
         }
     }
-
-    private fun handleDiagnostics(params: JsonObject) {
-        // Forward to Monaco via Bridge (runOnUiThread -> evaluateJavascript)
-        // monaco.editor.setModelMarkers(model, 'lsp', [...])
-    }
-
-    private fun handleShowMessage(params: JsonObject) {}
-    private fun handleLogMessage(params: JsonObject) {}
-    private fun handleRegisterCapability(json: JsonObject) {}
 
     override fun notifyDidChange(uri: String, content: String, version: Int) {
         val params = JsonObject().apply {
-            add("textDocument", JsonObject().apply {
-                addProperty("uri", uri)
-                addProperty("version", version)
-            })
+            add("textDocument", JsonObject().apply { addProperty("uri", uri); addProperty("version", version) })
             add("contentChanges", gson.toJsonTree(listOf(JsonObject().apply { addProperty("text", content) })))
         }
         sendNotification("textDocument/didChange", params)
@@ -146,52 +106,28 @@ class LspClientImpl(
 
     override fun notifyDidOpen(uri: String, content: String, languageId: String) {
         val params = JsonObject().apply {
-            add("textDocument", JsonObject().apply {
-                addProperty("uri", uri)
-                addProperty("languageId", languageId)
-                addProperty("version", 1)
-                addProperty("text", content)
-            })
+            add("textDocument", JsonObject().apply { addProperty("uri", uri); addProperty("languageId", languageId); addProperty("version", 1); addProperty("text", content) })
         }
         sendNotification("textDocument/didOpen", params)
     }
 
     override fun request(method: String, params: String, callback: (String) -> Unit) {
-        val jsonParams = JsonParser.parseString(params)
-        sendRequest(method, jsonParams, callback)
+        sendRequest(method, JsonParser.parseString(params), callback)
     }
 
-    override fun handleRequestFromEditor(json: String) {
-        // Parse JSON from Monaco (method, params, id) -> Forward to LSP Server
-    }
+    override fun handleRequestFromEditor(json: String) { /* forward to server */ }
 
-    override fun disconnect() {
-        webSocket?.close(1000, "Client Disconnect")
-        webSocket = null
-    }
+    override fun disconnect() { webSocket?.close(1000, "Client Disconnect"); webSocket = null }
 
     private fun sendRequest(method: String, params: Any, callback: (String) -> Unit) {
         val id = requestId.incrementAndGet()
         pendingRequests[id] = callback
-        val msg = JsonObject().apply {
-            addProperty("jsonrpc", "2.0")
-            addProperty("id", id)
-            addProperty("method", method)
-            add("params", gson.toJsonTree(params))
-        }
-        sendMessage(msg.toString())
+        sendMessage(JsonObject().apply { addProperty("jsonrpc", "2.0"); addProperty("id", id); addProperty("method", method); add("params", gson.toJsonTree(params)) }.toString())
     }
 
     private fun sendNotification(method: String, params: Any) {
-        val msg = JsonObject().apply {
-            addProperty("jsonrpc", "2.0")
-            addProperty("method", method)
-            add("params", gson.toJsonTree(params))
-        }
-        sendMessage(msg.toString())
+        sendMessage(JsonObject().apply { addProperty("jsonrpc", "2.0"); addProperty("method", method); add("params", gson.toJsonTree(params)) }.toString())
     }
 
-    private fun sendMessage(text: String) {
-        webSocket?.send(text) ?: scope.launch { messageQueue.send(text) }
-    }
-} 
+    private fun sendMessage(text: String) { webSocket?.send(text) ?: scope.launch { messageQueue.send(text) } }
+}
